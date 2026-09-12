@@ -242,6 +242,7 @@ void init_bli(void) {
                         (1 << 3) | // Oneshot entry control
                         (1 << 7) | // Drop-in driver loading
                         (1 << 8) | // Type #1 sort-key field
+                        (1 << 9) | // @saved pseudo-entry
                         (1 << 10) | // Type #1 devicetree field
                         (1 << 13) | // menu-disabled support
                         (1 << 18) | // Active TPM2 PCR bank reporting
@@ -429,6 +430,40 @@ bool bli_get_default_entry(char *path, size_t buf_size) {
 
 bool bli_get_oneshot_entry(char *path, size_t buf_size) {
     return handle_entry(L"LoaderEntryOneShot", true, path, buf_size);
+}
+
+bool bli_get_last_booted_entry(char *path, size_t buf_size) {
+    return handle_entry(L"LoaderEntryLastBooted", false, path, buf_size);
+}
+
+void bli_set_last_booted_entry(const char *id) {
+    wchar_t wide_id[MENU_PATH_MAX];
+    size_t len = strlen(id);
+    if (len > MENU_PATH_MAX - 1) {
+        len = MENU_PATH_MAX - 1;
+    }
+    for (size_t pos = 0; pos < len; pos++) {
+        wide_id[pos] = id[pos];
+    }
+    wide_id[len] = L'\0';
+
+    // This one survives the reboot it exists for, so it is worth not writing
+    // when nothing changed: NVRAM has a limited number of erase cycles.
+    wchar_t current[MENU_PATH_MAX];
+    UINTN current_size = sizeof(current);
+    if (gRT->GetVariable(L"LoaderEntryLastBooted", &bli_vendor_guid, NULL,
+                         &current_size, current) == 0
+     && current_size == (len + 1) * sizeof(wchar_t)
+     && memcmp(current, wide_id, current_size) == 0) {
+        return;
+    }
+
+    gRT->SetVariable(L"LoaderEntryLastBooted",
+            &bli_vendor_guid,
+            EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS
+                | EFI_VARIABLE_RUNTIME_ACCESS,
+            (len + 1) * sizeof(wchar_t),
+            wide_id);
 }
 
 void bli_set_selected_entry(const char *path) {

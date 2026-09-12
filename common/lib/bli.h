@@ -13,6 +13,13 @@ void bli_entries_publish(void);
 void bli_set_selected_entry(const char *path);
 bool bli_get_preferred_entry(char *path, size_t buf_size);
 bool bli_get_default_entry(char *path, size_t buf_size);
+
+// The designator a default entry uses to mean "whichever entry was booted
+// last" rather than a fixed one.
+#define BLI_SAVED_ENTRY "@saved"
+
+bool bli_get_last_booted_entry(char *path, size_t buf_size);
+void bli_set_last_booted_entry(const char *id);
 bool bli_get_oneshot_entry(char *path, size_t buf_size);
 
 #endif

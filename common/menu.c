@@ -1276,6 +1276,18 @@ static bool find_entry_by_path(const char *path, struct menu_entry *current_entr
 #if defined (UEFI)
 // A LoaderEntries identifier names the entry; a path is also accepted, as
 // an older LoaderEntryDefault in NVRAM can hold one.
+// `@saved` stands for whatever was booted last rather than naming an entry.
+// Returns false when it stands for nothing yet, there having been no such
+// boot, so that the caller falls through to its next candidate.
+static bool resolve_saved_entry(char *path, size_t buf_size, bool *saved) {
+    if (strcmp(path, BLI_SAVED_ENTRY) != 0) {
+        return true;
+    }
+
+    *saved = true;
+    return bli_get_last_booted_entry(path, buf_size);
+}
+
 static void find_entry_by_bli_id_or_path(const char *str,
                                          struct menu_entry **found_entry,
                                          size_t *found_index) {
@@ -1849,6 +1861,9 @@ noreturn void _menu(bool first_run) {
 
     bool has_entry = false;
     bool default_entry_unresolved = false;
+#if defined (UEFI)
+    bool use_saved_entry = false;
+#endif
 
     bls_append_entries();
 
@@ -1949,10 +1964,14 @@ noreturn void _menu(bool first_run) {
         // here marks an entry bad, so a preferred entry differs from the
         // default only in being looked at first.
         if (bli_get_preferred_entry(path, MENU_PATH_MAX)) {
-            find_entry_by_bli_id_or_path(path, &found_entry, &found_index);
+            if (resolve_saved_entry(path, MENU_PATH_MAX, &use_saved_entry)) {
+                find_entry_by_bli_id_or_path(path, &found_entry, &found_index);
+            }
         }
         if (found_entry == NULL && bli_get_default_entry(path, MENU_PATH_MAX)) {
-            find_entry_by_bli_id_or_path(path, &found_entry, &found_index);
+            if (resolve_saved_entry(path, MENU_PATH_MAX, &use_saved_entry)) {
+                find_entry_by_bli_id_or_path(path, &found_entry, &found_index);
+            }
         }
 
         if (found_entry != NULL) {
@@ -2354,6 +2373,10 @@ timeout_aborted:
                 char entry_id[BLI_ID_MAX];
                 bli_entry_id(selected_menu_entry, entry_id);
                 bli_set_selected_entry(entry_id);
+
+                if (use_saved_entry) {
+                    bli_set_last_booted_entry(entry_id);
+                }
 #endif
 
                 boot(selected_menu_entry->body);

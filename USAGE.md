@@ -29,6 +29,11 @@ Entries written in `limine.conf` take precedence. A snippet naming a kernel
 that a `limine.conf` entry already boots is dropped rather than shown twice,
 and the remaining snippets appear after the hand-written entries.
 
+`bootctl set-default @saved` is honoured: the entry booted last is recorded in
+`LoaderEntryLastBooted` and selected on the next boot. The variable is written
+only while `@saved` is in effect, and only when the entry differs from the one
+already recorded.
+
 ## Drop-in EFI drivers
 On UEFI, before it looks at any volume, Limine loads and starts every EFI
 driver found in the `/EFI/systemd/drivers` directory of the volume it was
