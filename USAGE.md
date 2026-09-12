@@ -29,6 +29,12 @@ Entries written in `limine.conf` take precedence. A snippet naming a kernel
 that a `limine.conf` entry already boots is dropped rather than shown twice,
 and the remaining snippets appear after the hand-written entries.
 
+Boot counting is honoured. A snippet named `<name>+<left>.conf` or
+`<name>+<left>-<done>.conf` is renamed as it is booted, so an attempt that
+never reaches userspace is still counted; `systemd-bless-boot` drops the
+counter once a boot has proved itself. Entries with no attempts left are still
+bootable, but sort below every other entry.
+
 An Extended Boot Loader (XBOOTLDR) partition on the boot drive is searched as
 well as the boot partition, and its entries are merged into the same ordering.
 Paths in those entries resolve against that partition, so the same path on both

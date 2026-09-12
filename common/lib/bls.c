@@ -17,6 +17,7 @@
 #define BLS_MAX_SNIPPET (64 * 1024)
 #define BLS_MAX_INITRDS 8
 #define BLS_MAX_PREFIX 64
+#define BLS_MAX_COUNTED 64
 
 // The Extended Boot Loader partition, which holds boot entries alongside, or
 // instead of, the ones on the EFI system partition.
@@ -31,6 +32,10 @@ struct bls_snippet {
     const struct bls_source *source;
     char *body;
     char *id;
+    // Boot counting, from a "+left-done" suffix on the filename.
+    bool counted;
+    unsigned tries_left;
+    unsigned tries_done;
     char *title;
     char *version;
     char *sort_key;
@@ -80,6 +85,55 @@ static bool bls_collect_name(const char *name, bool is_dir, void *ctx) {
 
     names->name[names->count++] = bls_strdup(name, strlen(name));
     return true;
+}
+
+// A counted entry's filename ends in "+<left>" or "+<left>-<done>", giving
+// how many attempts remain and how many have already been made.
+static void bls_parse_counter(struct bls_snippet *snippet) {
+    const char *plus = NULL;
+
+    for (const char *p = snippet->id; *p != '\0'; p++) {
+        if (*p == '+') {
+            plus = p;
+        }
+    }
+
+    if (plus == NULL || plus[1] == '\0') {
+        return;
+    }
+
+    const char *p = plus + 1;
+    unsigned left = 0;
+    size_t digits = 0;
+    while (*p >= '0' && *p <= '9') {
+        left = left * 10 + (unsigned)(*p++ - '0');
+        digits++;
+    }
+
+    if (digits == 0 || digits > 9) {
+        return;
+    }
+
+    unsigned done = 0;
+    if (*p == '-') {
+        p++;
+        digits = 0;
+        while (*p >= '0' && *p <= '9') {
+            done = done * 10 + (unsigned)(*p++ - '0');
+            digits++;
+        }
+        if (digits == 0 || digits > 9) {
+            return;
+        }
+    }
+
+    if (*p != '\0') {
+        return;
+    }
+
+    snippet->counted = true;
+    snippet->tries_left = left;
+    snippet->tries_done = done;
 }
 
 // Compare two version strings the way a reader would: digit runs by value, so
@@ -147,6 +201,13 @@ static int bls_strcmp_null(const char *a, const char *b) {
 // Specification order: by sort-key, then machine-id, then version with the
 // newest first, then the filename as a tie-break.
 static int bls_compare(const struct bls_snippet *a, const struct bls_snippet *b) {
+    bool a_spent = a->counted && a->tries_left == 0;
+    bool b_spent = b->counted && b->tries_left == 0;
+
+    if (a_spent != b_spent) {
+        return a_spent ? 1 : -1;
+    }
+
     int r = bls_strcmp_null(a->sort_key, b->sort_key);
     if (r != 0) {
         return r;
@@ -504,6 +565,7 @@ static size_t bls_gather(const struct bls_source *source,
         snippet->source = source;
         snippet->id = bls_strdup(names.name[i], strlen(names.name[i]) - 5);
 
+        bls_parse_counter(snippet);
         bls_parse(snippet, text, size);
         pmm_free(text, size);
         pmm_free(names.name[i], strlen(names.name[i]) + 1);
@@ -518,6 +580,135 @@ static size_t bls_gather(const struct bls_source *source,
     }
 
     return count;
+}
+
+#define BLS_COUNTED_NAME_MAX 128
+
+struct bls_counted {
+    struct volume *vol;
+    const char *id;
+    // What the snippet is called on disk right now, which stops matching the
+    // id the moment the counter is written down.
+    char name[BLS_COUNTED_NAME_MAX];
+    unsigned tries_left;
+    unsigned tries_done;
+};
+
+static struct bls_counted bls_counted_entries[BLS_MAX_COUNTED];
+static size_t bls_counted_count = 0;
+
+static void bls_remember_counter(const struct bls_snippet *snippet) {
+    if (!snippet->counted || bls_counted_count == BLS_MAX_COUNTED) {
+        return;
+    }
+
+    size_t len = strlen(snippet->id);
+    if (len >= BLS_COUNTED_NAME_MAX) {
+        return;
+    }
+
+    struct bls_counted *counted = &bls_counted_entries[bls_counted_count++];
+    counted->vol = snippet->source->vol;
+    counted->id = snippet->id;
+    memcpy(counted->name, snippet->id, len + 1);
+    counted->tries_left = snippet->tries_left;
+    counted->tries_done = snippet->tries_done;
+}
+
+static size_t bls_append_uint(char *buf, size_t pos, unsigned value) {
+    char digits[10];
+    size_t ndigits = 0;
+
+    do {
+        digits[ndigits++] = '0' + (char)(value % 10);
+        value /= 10;
+    } while (value > 0);
+
+    while (ndigits > 0) {
+        buf[pos++] = digits[--ndigits];
+    }
+
+    return pos;
+}
+
+void bls_count_boot(const char *entry_id) {
+    if (entry_id == NULL) {
+        return;
+    }
+
+    for (size_t i = 0; i < bls_counted_count; i++) {
+        struct bls_counted *counted = &bls_counted_entries[i];
+
+        if (strcmp(counted->id, entry_id) != 0) {
+            continue;
+        }
+
+        // Out of attempts already: the entry still boots if chosen, but there
+        // is nothing left to count down.
+        if (counted->tries_left == 0) {
+            return;
+        }
+
+        char old_path[MENU_PATH_MAX];
+        size_t pos = 0;
+        for (const char *p = BLS_DIR "/"; *p != '\0'; p++) {
+            old_path[pos++] = *p;
+        }
+        for (const char *p = counted->name; *p != '\0'; p++) {
+            old_path[pos++] = *p;
+        }
+        for (const char *p = ".conf"; *p != '\0'; p++) {
+            old_path[pos++] = *p;
+        }
+        old_path[pos] = '\0';
+
+        // The base name is everything before the counter.
+        // Room for the longest counter the parser accepts on top of the base.
+        char new_name[BLS_COUNTED_NAME_MAX + 32];
+        size_t base_len = 0;
+        for (size_t j = 0; counted->name[j] != '\0'; j++) {
+            if (counted->name[j] == '+') {
+                base_len = j;
+            }
+        }
+
+        if (base_len == 0) {
+            return;
+        }
+
+        memcpy(new_name, counted->name, base_len);
+        pos = base_len;
+        new_name[pos++] = '+';
+        pos = bls_append_uint(new_name, pos, counted->tries_left - 1);
+        new_name[pos++] = '-';
+        pos = bls_append_uint(new_name, pos, counted->tries_done + 1);
+        for (const char *p = ".conf"; *p != '\0'; p++) {
+            new_name[pos++] = *p;
+        }
+        new_name[pos] = '\0';
+
+#if defined (UEFI)
+        if (fs_rename(counted->vol, old_path, new_name)) {
+            counted->tries_left--;
+            counted->tries_done++;
+            // The rename may have lengthened the counter; the entry simply
+            // stops being counted if the new name no longer fits.
+            new_name[pos - 5] = '\0';
+            if (pos - 4 <= BLS_COUNTED_NAME_MAX) {
+                memcpy(counted->name, new_name, pos - 4);
+            } else {
+                counted->tries_left = 0;
+            }
+        } else
+#endif
+        {
+            // Booting an entry whose count could not be written down is
+            // better than not booting, but the attempt is now invisible.
+            printv("bls: could not count the boot of %s\n", counted->id);
+        }
+
+        return;
+    }
 }
 
 void bls_append_entries(void) {
@@ -595,6 +786,8 @@ void bls_append_entries(void) {
         if (snippet->body == NULL) {
             continue;
         }
+
+        bls_remember_counter(snippet);
 
         struct menu_entry *entry = ext_mem_alloc(sizeof(struct menu_entry));
         entry->name = bls_build_name(snippet);

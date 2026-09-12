@@ -2375,6 +2375,10 @@ timeout_aborted:
                                  strlen(entry_path) + 1,
                                  entry_path);
 
+                // Before handing over: a boot that never completes must
+                // still have been counted.
+                bls_count_boot(selected_menu_entry->bli_id);
+
                 char entry_id[BLI_ID_MAX];
                 bli_entry_id(selected_menu_entry, entry_id);
                 bli_set_selected_entry(entry_id);

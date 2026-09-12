@@ -240,6 +240,7 @@ void init_bli(void) {
                         (1 << 1) | // Oneshot timeout control
                         (1 << 2) | // Default entry control
                         (1 << 3) | // Oneshot entry control
+                        (1 << 4) | // Boot counting
                         (1 << 5) | // XBOOTLDR partition
                         (1 << 7) | // Drop-in driver loading
                         (1 << 8) | // Type #1 sort-key field
