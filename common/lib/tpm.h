@@ -12,7 +12,12 @@
 #define TPM_PCR_LOADED_IMAGES   9
 
 // TCG PC Client Platform Firmware Profile event types
+#define TPM_EV_EVENT_TAG        0x00000006
 #define TPM_EV_IPL              0x0000000d
+
+// Platform configuration, per the TCG PC Client profile. Only measurements
+// describing the machine itself belong here.
+#define TPM_PCR_PLATFORM_CONFIG 1
 
 #if defined (UEFI)
 
@@ -32,6 +37,13 @@ uint32_t tpm_active_pcr_banks(void);
 void tpm_measure(uint32_t pcr, uint32_t event_type,
                  const void *data, size_t data_size,
                  const char *desc_prefix, const char *desc_value);
+
+// Measure into the given PCR, logging an EV_EVENT_TAG record naming `event_id`
+// rather than the EV_IPL record tpm_measure() writes. `desc` must be ASCII: it
+// goes into the log as UTF-16, which is what readers of a tagged event expect.
+void tpm_measure_tagged(uint32_t pcr, uint32_t event_id,
+                        const void *data, size_t data_size,
+                        const char *desc);
 
 // Measure a config-supplied URI string into the given PCR with any trailing
 // `#<hash>` suffix stripped, so the digest captures only the policy-stable

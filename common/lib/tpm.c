@@ -122,6 +122,64 @@ static void tpm_extend_failed(void) {
     }
 }
 
+// An EFI_TCG2_EVENT whose payload is a TCG_PCClientTaggedEvent, which is how
+// the newer event types carry a machine-readable tag alongside the text.
+struct tcg2_tagged_event {
+    UINT32 Size;
+    EFI_TCG2_EVENT_HEADER Header;
+    UINT32 EventId;
+    UINT32 EventSize;
+    UINT8 Event[];
+} __attribute__((packed));
+
+void tpm_measure_tagged(uint32_t pcr, uint32_t event_id,
+                        const void *data, size_t data_size,
+                        const char *desc) {
+    if (!measured_boot || data == NULL) {
+        return;
+    }
+
+    if (tcg2 == NULL) {
+        // Confidential-computing platforms have no tagged event type, so the
+        // measurement is logged the older way rather than skipped.
+        tpm_measure(pcr, TPM_EV_IPL, data, data_size, desc, NULL);
+        return;
+    }
+
+    size_t desc_chars = desc != NULL ? strlen(desc) : 0;
+    size_t desc_size = (desc_chars + 1) * sizeof(wchar_t);
+    size_t event_size = offsetof(struct tcg2_tagged_event, Event) + desc_size;
+
+    struct tcg2_tagged_event *event = ext_mem_alloc(event_size);
+    event->Size = (UINT32)event_size;
+    event->Header.HeaderSize = sizeof(EFI_TCG2_EVENT_HEADER);
+    event->Header.HeaderVersion = 1;
+    event->Header.PCRIndex = pcr;
+    event->Header.EventType = TPM_EV_EVENT_TAG;
+    event->EventId = event_id;
+    event->EventSize = (UINT32)desc_size;
+
+    wchar_t *wide = (wchar_t *)event->Event;
+    for (size_t i = 0; i < desc_chars; i++) {
+        wide[i] = (unsigned char)desc[i];
+    }
+    wide[desc_chars] = L'\0';
+
+    EFI_STATUS status = tcg2->HashLogExtendEvent(
+        tcg2, 0,
+        (EFI_PHYSICAL_ADDRESS)(uintptr_t)data, (UINT64)data_size,
+        (EFI_TCG2_EVENT *)event);
+    if (status != EFI_SUCCESS) {
+        quiet = false;
+        print("WARNING: tpm: HashLogExtendEvent for PCR %u failed: %X\n"
+              "         This component has not been measured.\n",
+              pcr, (uint64_t)status);
+        tpm_extend_failed();
+    }
+
+    pmm_free(event, event_size);
+}
+
 void tpm_measure(uint32_t pcr, uint32_t event_type,
                  const void *data, size_t data_size,
                  const char *desc_prefix, const char *desc_value) {

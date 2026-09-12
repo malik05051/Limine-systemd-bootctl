@@ -170,6 +170,23 @@ For PCR 9:
   before Limine's `/chosen` and memory-node fixups (i.e. exactly the bytes
   on disk or in the firmware's `EFI_DTB_TABLE_GUID` table).
 
+### SMBIOS measurement
+
+When measured boot is on, the SMBIOS structures describing the machine itself
+are measured into PCR 1 before anything else: type 1 (system information),
+type 2 (baseboard information) and every type 11 (OEM strings) structure.
+Each is logged as an `EV_EVENT_TAG` record carrying the same event tag
+systemd uses, so a policy written against one boot loader's event log reads
+the other's.
+
+The wake-up type field of the type 1 structure is zeroed for the measurement.
+It records how the machine was powered on, and would otherwise give a resumed
+machine a different PCR 1 from a cold-booted one.
+
+`LoaderPcrSMBIOS` is set to the PCR used, and measurement is skipped when that
+variable already exists, so a stage that has already done this is not
+undone by extending the same PCR twice.
+
 ## BIOS/MBR
 In order to install Limine on a MBR device (which can just be a raw image
 file), run `limine bios-install` as such:

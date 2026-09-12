@@ -6,6 +6,7 @@
 #include <menu.h>
 #include <lib/bli.h>
 #include <lib/bls.h>
+#include <lib/smbios.h>
 #include <lib/print.h>
 #include <lib/misc.h>
 #include <lib/libc.h>
@@ -1740,6 +1741,10 @@ noreturn void _menu(bool first_run) {
     if (!tpm_present()) {
         measured_boot = false;
     }
+
+    // The machine's own description belongs to the platform's PCR, not to
+    // the ones this loader measures its payload into.
+    smbios_measure();
 
     // Measure the on-disk config bytes now that measured_boot is final.
     size_t raw_size;

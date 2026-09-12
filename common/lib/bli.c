@@ -248,7 +248,8 @@ void init_bli(void) {
                         (1 << 13) | // menu-disabled support
                         (1 << 18) | // Active TPM2 PCR bank reporting
                         (1 << 19) | // Preferred entry control
-                        (1 << 20); // Keyboard layout reporting
+                        (1 << 20) | // Keyboard layout reporting
+                        (1 << 21); // SMBIOS measurement
     gRT->SetVariable(L"LoaderFeatures",
             &bli_vendor_guid,
             EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
@@ -465,6 +466,24 @@ void bli_set_last_booted_entry(const char *id) {
                 | EFI_VARIABLE_RUNTIME_ACCESS,
             (len + 1) * sizeof(wchar_t),
             wide_id);
+}
+
+bool bli_smbios_pcr_recorded(void) {
+    UINTN size = 0;
+    EFI_STATUS status = gRT->GetVariable(L"LoaderPcrSMBIOS", &bli_vendor_guid,
+                                         NULL, &size, NULL);
+
+    // A present variable answers a null buffer with EFI_BUFFER_TOO_SMALL, but
+    // anything other than "no such variable" means one may be there, and
+    // measuring twice is worse than not measuring at all.
+    return status != EFI_NOT_FOUND;
+}
+
+void bli_set_smbios_pcr(uint32_t pcr) {
+    wchar_t buf[16];
+    size_t len = wstr_append_dec(buf, 0, SIZEOF_ARRAY(buf), pcr, 1);
+
+    bli_set_string(L"LoaderPcrSMBIOS", buf, len);
 }
 
 void bli_set_selected_entry(const char *path) {

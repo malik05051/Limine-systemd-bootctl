@@ -20,6 +20,11 @@ bool bli_get_default_entry(char *path, size_t buf_size);
 
 bool bli_get_last_booted_entry(char *path, size_t buf_size);
 void bli_set_last_booted_entry(const char *id);
+
+// Whether some earlier stage already measured the SMBIOS structures, and the
+// call that records that this one did.
+bool bli_smbios_pcr_recorded(void);
+void bli_set_smbios_pcr(uint32_t pcr);
 bool bli_get_oneshot_entry(char *path, size_t buf_size);
 
 #endif
