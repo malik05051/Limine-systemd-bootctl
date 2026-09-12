@@ -5,6 +5,7 @@
 #include <config.h>
 #include <menu.h>
 #include <lib/bli.h>
+#include <lib/bls.h>
 #include <lib/print.h>
 #include <lib/misc.h>
 #include <lib/libc.h>
@@ -1848,6 +1849,8 @@ noreturn void _menu(bool first_run) {
 
     bool has_entry = false;
     bool default_entry_unresolved = false;
+
+    bls_append_entries();
 
 #if defined (UEFI)
     bli_entries_reset();

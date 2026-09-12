@@ -13,6 +13,22 @@ can be installed there and coexist with a BIOS installation of Limine
 A valid config file should also be provided as described in
 [CONFIG.md](CONFIG.md).
 
+## Type #1 boot entries
+
+Limine reads Boot Loader Specification Type #1 entries from
+`/loader/entries/*.conf` on the boot partition and adds them to the menu, so a
+system whose kernels are installed by `kernel-install` needs no `limine.conf`
+entry of its own.
+
+The `title`, `version`, `sort-key`, `machine-id`, `linux`, `initrd` (which may
+repeat), `devicetree`, `options` and `efi` fields are understood. Entries are
+ordered as the specification requires: by `sort-key`, then `machine-id`, then
+`version` with the newest first, then filename.
+
+Entries written in `limine.conf` take precedence. A snippet naming a kernel
+that a `limine.conf` entry already boots is dropped rather than shown twice,
+and the remaining snippets appear after the hand-written entries.
+
 ## Drop-in EFI drivers
 On UEFI, before it looks at any volume, Limine loads and starts every EFI
 driver found in the `/EFI/systemd/drivers` directory of the volume it was

@@ -241,6 +241,8 @@ void init_bli(void) {
                         (1 << 2) | // Default entry control
                         (1 << 3) | // Oneshot entry control
                         (1 << 7) | // Drop-in driver loading
+                        (1 << 8) | // Type #1 sort-key field
+                        (1 << 10) | // Type #1 devicetree field
                         (1 << 13) | // menu-disabled support
                         (1 << 18) | // Active TPM2 PCR bank reporting
                         (1 << 19) | // Preferred entry control
