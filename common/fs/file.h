@@ -46,4 +46,13 @@ bool fs_readdir(struct volume *part, const char *path,
                 bool (*callback)(const char *name, bool is_dir, void *ctx),
                 void *ctx);
 
+#if defined (UEFI)
+
+// Rename a file within its directory. The only write this bootloader does, so
+// it goes through the firmware rather than the read-only filesystem drivers.
+// `new_name` is a bare filename, not a path.
+bool fs_rename(struct volume *part, const char *path, const char *new_name);
+
+#endif
+
 #endif
