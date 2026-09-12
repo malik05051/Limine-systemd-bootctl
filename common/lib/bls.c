@@ -29,6 +29,7 @@ struct bls_source {
 
 struct bls_snippet {
     const struct bls_source *source;
+    char *body;
     char *id;
     char *title;
     char *version;
@@ -493,6 +494,8 @@ static size_t bls_gather(const struct bls_source *source,
         char *text = bls_read_snippet(source->vol, names.name[i], &size);
         if (text == NULL) {
             printv("bls: could not read %s\n", names.name[i]);
+            pmm_free(names.name[i], strlen(names.name[i]) + 1);
+            names.name[i] = NULL;
             continue;
         }
 
@@ -563,11 +566,9 @@ void bls_append_entries(void) {
         snippets[j] = key;
     }
 
-    struct menu_entry **tail = &menu_tree;
-    while (*tail != NULL) {
-        tail = &(*tail)->next;
-    }
-
+    // Decided against the menu as limine.conf left it, before anything is
+    // appended: two snippets may legitimately share a kernel and differ only
+    // in their initrd or options, and neither displaces the other.
     for (size_t i = 0; i < count; i++) {
         struct bls_snippet *snippet = &snippets[i];
 
@@ -577,15 +578,27 @@ void bls_append_entries(void) {
             continue;
         }
 
-        char *body = bls_build_body(snippet);
-        if (body == NULL) {
+        snippet->body = bls_build_body(snippet);
+        if (snippet->body == NULL) {
             printv("bls: %s does not fit in an entry, skipping\n", snippet->id);
+        }
+    }
+
+    struct menu_entry **tail = &menu_tree;
+    while (*tail != NULL) {
+        tail = &(*tail)->next;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        struct bls_snippet *snippet = &snippets[i];
+
+        if (snippet->body == NULL) {
             continue;
         }
 
         struct menu_entry *entry = ext_mem_alloc(sizeof(struct menu_entry));
         entry->name = bls_build_name(snippet);
-        entry->body = body;
+        entry->body = snippet->body;
         entry->bli_id = snippet->id;
 
         *tail = entry;
