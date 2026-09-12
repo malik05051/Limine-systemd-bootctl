@@ -444,11 +444,13 @@ static bool fat32_filename_to_8_3(char *dest, const char *src) {
     return true;
 }
 
-static int fat32_open_in(struct fat32_context* context, struct fat32_directory_entry* directory, struct fat32_directory_entry* file, const char* name) {
+// Read a whole directory into memory. `directory` is NULL for the FAT12/16
+// root, which lives outside the cluster area. `*chain_len` receives the block
+// count the caller must free with, in blocks of one cluster each.
+static struct fat32_directory_entry *fat32_load_directory(struct fat32_context *context,
+                                                          struct fat32_directory_entry *directory,
+                                                          size_t *chain_len) {
     size_t block_size = context->sectors_per_cluster * context->bytes_per_sector;
-    char current_lfn[FAT32_LFN_MAX_FILENAME_LENGTH] = {0};
-    unsigned int lfn_expected = 0;
-    uint8_t lfn_checksum = 0;
 
     size_t dir_chain_len;
     struct fat32_directory_entry *directory_entries;
@@ -461,15 +463,15 @@ static int fat32_open_in(struct fat32_context* context, struct fat32_directory_e
         uint32_t *directory_cluster_chain = cache_cluster_chain(context, current_cluster_number, &dir_chain_len);
 
         if (directory_cluster_chain == NULL)
-            return -1;
+            return NULL;
 
         size_t alloc_size = CHECKED_MUL(dir_chain_len, block_size, ({
             pmm_free(directory_cluster_chain, dir_chain_len * sizeof(uint32_t));
-            return -1;
+            return NULL;
         }));
         if (alloc_size > 256 * 1024 * 1024) {
             pmm_free(directory_cluster_chain, dir_chain_len * sizeof(uint32_t));
-            return -1;
+            return NULL;
         }
 
         directory_entries = ext_mem_alloc(alloc_size);
@@ -477,24 +479,42 @@ static int fat32_open_in(struct fat32_context* context, struct fat32_directory_e
         if (!read_cluster_chain(context, directory_cluster_chain, dir_chain_len, directory_entries, 0, alloc_size)) {
             pmm_free(directory_entries, alloc_size);
             pmm_free(directory_cluster_chain, dir_chain_len * sizeof(uint32_t));
-            return -1;
+            return NULL;
         }
 
         pmm_free(directory_cluster_chain, dir_chain_len * sizeof(uint32_t));
     } else {
-        dir_chain_len = DIV_ROUNDUP(context->root_entries * sizeof(struct fat32_directory_entry), block_size, return 1);
+        dir_chain_len = DIV_ROUNDUP(context->root_entries * sizeof(struct fat32_directory_entry), block_size, return NULL);
 
-        size_t alloc_size = CHECKED_MUL(dir_chain_len, block_size, return -1);
+        size_t alloc_size = CHECKED_MUL(dir_chain_len, block_size, return NULL);
         if (alloc_size > 256 * 1024 * 1024) {
-            return -1;
+            return NULL;
         }
 
         directory_entries = ext_mem_alloc(alloc_size);
 
         if (!volume_read(context->part, directory_entries, (uint64_t)context->root_start * context->bytes_per_sector, context->root_entries * sizeof(struct fat32_directory_entry))) {
             pmm_free(directory_entries, alloc_size);
-            return -1;
+            return NULL;
         }
+    }
+
+    *chain_len = dir_chain_len;
+    return directory_entries;
+}
+
+static int fat32_open_in(struct fat32_context* context, struct fat32_directory_entry* directory, struct fat32_directory_entry* file, const char* name) {
+    size_t block_size = context->sectors_per_cluster * context->bytes_per_sector;
+    char current_lfn[FAT32_LFN_MAX_FILENAME_LENGTH] = {0};
+    unsigned int lfn_expected = 0;
+    uint8_t lfn_checksum = 0;
+
+    size_t dir_chain_len;
+    struct fat32_directory_entry *directory_entries =
+        fat32_load_directory(context, directory, &dir_chain_len);
+
+    if (directory_entries == NULL) {
+        return -1;
     }
 
     int ret;
@@ -619,6 +639,195 @@ static int fat32_open_in(struct fat32_context* context, struct fat32_directory_e
 out:
     pmm_free(directory_entries, dir_chain_len * block_size);
     return ret;
+}
+
+// Reassemble the printable name of a short entry, which is stored as a
+// space-padded 8.3 field with no separator. An all-lowercase name needs no
+// long entry: VFAT records it as uppercase plus a case hint in the byte MS-DOS
+// reserved, so a directory written as "subdir" is on disk as "SUBDIR".
+#define FAT32_NT_BASE_LOWERCASE 0x08
+#define FAT32_NT_EXT_LOWERCASE  0x10
+
+static void fat32_name_from_8_3(char *dest, const struct fat32_directory_entry *entry) {
+    const uint8_t nt_flags = (uint8_t)entry->file_data_1[0];
+    size_t n = 0;
+
+    for (int i = 0; i < 8 && entry->file_name_and_ext[i] != ' '; i++) {
+        char c = entry->file_name_and_ext[i];
+        dest[n++] = (nt_flags & FAT32_NT_BASE_LOWERCASE) ? tolower(c) : c;
+    }
+
+    if (entry->file_name_and_ext[8] != ' ') {
+        dest[n++] = '.';
+        for (int i = 8; i < 8 + 3 && entry->file_name_and_ext[i] != ' '; i++) {
+            char c = entry->file_name_and_ext[i];
+            dest[n++] = (nt_flags & FAT32_NT_EXT_LOWERCASE) ? tolower(c) : c;
+        }
+    }
+
+    dest[n] = 0;
+}
+
+bool fat32_readdir(struct volume *part, const char *path,
+                   bool (*callback)(const char *name, bool is_dir, void *ctx),
+                   void *ctx) {
+    struct fat32_context context;
+    if (fat32_init_context(&context, part) != 0) {
+        return false;
+    }
+
+    struct fat32_directory_entry _current_directory;
+    struct fat32_directory_entry *current_directory;
+
+    switch (context.type) {
+        case 12:
+        case 16: {
+            current_directory = NULL;
+            break;
+        }
+        case 32: {
+            _current_directory.cluster_num_low = context.root_directory_cluster & 0xFFFF;
+            _current_directory.cluster_num_high = context.root_directory_cluster >> 16;
+            current_directory = &_current_directory;
+            break;
+        }
+        default: {
+            __builtin_unreachable();
+        }
+    }
+
+    char component[FAT32_LFN_MAX_FILENAME_LENGTH];
+
+    for (size_t i = 0; path[i] != 0;) {
+        if (path[i] == '/') {
+            i++;
+            continue;
+        }
+
+        size_t j = 0;
+        while (path[i] != 0 && path[i] != '/') {
+            if (j >= SIZEOF_ARRAY(component) - 1) {
+                return false;
+            }
+            component[j++] = path[i++];
+        }
+        component[j] = 0;
+
+        struct fat32_directory_entry found;
+        if (fat32_open_in(&context, current_directory, &found, component) != 0) {
+            return false;
+        }
+        if (!(found.attribute & FAT32_ATTRIBUTE_SUBDIRECTORY)) {
+            return false;
+        }
+
+        _current_directory = found;
+        current_directory = &_current_directory;
+    }
+
+    size_t dir_chain_len;
+    struct fat32_directory_entry *directory_entries =
+        fat32_load_directory(&context, current_directory, &dir_chain_len);
+
+    if (directory_entries == NULL) {
+        return false;
+    }
+
+    size_t block_size = context.sectors_per_cluster * context.bytes_per_sector;
+    size_t entry_count = (dir_chain_len * block_size) / sizeof(struct fat32_directory_entry);
+
+    char current_lfn[FAT32_LFN_MAX_FILENAME_LENGTH] = {0};
+    unsigned int lfn_expected = 0;
+    uint8_t lfn_checksum = 0;
+    bool lfn_complete = false;
+
+    for (size_t i = 0; i < entry_count; i++) {
+        struct fat32_directory_entry *entry = &directory_entries[i];
+
+        if (entry->file_name_and_ext[0] == 0x00) {
+            break;
+        }
+
+        if ((uint8_t)entry->file_name_and_ext[0] == 0xE5) {
+            lfn_expected = 0;
+            lfn_complete = false;
+            continue;
+        }
+
+        if (entry->attribute == FAT32_LFN_ATTRIBUTE) {
+            struct fat32_lfn_entry *lfn = (struct fat32_lfn_entry *)entry;
+
+            const unsigned int seq_num = lfn->sequence_number & 0b00011111;
+
+            if (lfn->sequence_number & 0b01000000) {
+                memset(current_lfn, ' ', sizeof(current_lfn));
+                lfn_expected = seq_num;
+                lfn_checksum = lfn->dos_checksum;
+                lfn_complete = false;
+            }
+
+            if (seq_num == 0 || seq_num != lfn_expected
+             || lfn->dos_checksum != lfn_checksum) {
+                lfn_expected = 0;
+                lfn_complete = false;
+                continue;
+            }
+            lfn_expected--;
+
+            const unsigned int lfn_index = (seq_num - 1U) * 13U;
+            if (lfn_index >= FAT32_LFN_MAX_ENTRIES * 13) {
+                lfn_expected = 0;
+                lfn_complete = false;
+                continue;
+            }
+
+            fat32_lfncpy(current_lfn, sizeof(current_lfn), lfn_index + 0, lfn->name1, 5);
+            fat32_lfncpy(current_lfn, sizeof(current_lfn), lfn_index + 5, lfn->name2, 6);
+            fat32_lfncpy(current_lfn, sizeof(current_lfn), lfn_index + 11, lfn->name3, 2);
+
+            if (seq_num == 1) {
+                // remove trailing spaces
+                for (int j = SIZEOF_ARRAY(current_lfn) - 2; j >= -1; j--) {
+                    if (j == -1 || current_lfn[j] != ' ') {
+                        current_lfn[j + 1] = 0;
+                        break;
+                    }
+                }
+                lfn_complete = true;
+            }
+
+            continue;
+        }
+
+        if (entry->attribute & FAT32_ATTRIBUTE_VOLLABEL) {
+            lfn_complete = false;
+            continue;
+        }
+
+        char name[FAT32_LFN_MAX_FILENAME_LENGTH];
+
+        // A long name only belongs to the short entry it was checksummed
+        // against; anything else is a stale or truncated set.
+        if (lfn_complete
+         && fat32_lfn_checksum(entry->file_name_and_ext) == lfn_checksum) {
+            strcpy(name, current_lfn);
+        } else {
+            fat32_name_from_8_3(name, entry);
+        }
+
+        lfn_complete = false;
+
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+            continue;
+        }
+
+        if (!callback(name, (entry->attribute & FAT32_ATTRIBUTE_SUBDIRECTORY) != 0, ctx)) {
+            break;
+        }
+    }
+
+    pmm_free(directory_entries, dir_chain_len * block_size);
+    return true;
 }
 
 char *fat32_get_label(struct volume *part) {

@@ -38,4 +38,12 @@ struct file_handle *fopen(struct volume *part, const char *filename);
 uint64_t fread(struct file_handle *fd, void *buf, uint64_t loc, uint64_t count);
 void fclose(struct file_handle *fd);
 
+// List the names in a directory, calling `callback` once per entry; it
+// returns false to stop the walk early. `.` and `..` are not reported.
+// False means the directory could not be listed at all, which includes a
+// filesystem with no way to enumerate one.
+bool fs_readdir(struct volume *part, const char *path,
+                bool (*callback)(const char *name, bool is_dir, void *ctx),
+                void *ctx);
+
 #endif

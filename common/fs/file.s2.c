@@ -32,6 +32,16 @@ bool fs_get_guid(struct guid *guid, struct volume *part) {
 
 bool case_insensitive_fopen = false;
 
+bool fs_readdir(struct volume *part, const char *path,
+                bool (*callback)(const char *name, bool is_dir, void *ctx),
+                void *ctx) {
+    if (part->pxe) {
+        return false;
+    }
+
+    return fat32_readdir(part, path, callback, ctx);
+}
+
 struct file_handle *fopen(struct volume *part, const char *filename) {
     size_t filename_new_len = strlen(filename) + 2;
     char *filename_new = ext_mem_alloc(filename_new_len);
