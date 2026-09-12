@@ -7,6 +7,8 @@
 #include <lib/misc.h>
 #include <lib/print.h>
 #include <fs/file.h>
+#include <lib/guid.h>
+#include <lib/part.h>
 #include <mm/pmm.h>
 #include <menu.h>
 
@@ -14,8 +16,19 @@
 #define BLS_MAX_ENTRIES 256
 #define BLS_MAX_SNIPPET (64 * 1024)
 #define BLS_MAX_INITRDS 8
+#define BLS_MAX_PREFIX 64
+
+// The Extended Boot Loader partition, which holds boot entries alongside, or
+// instead of, the ones on the EFI system partition.
+#define XBOOTLDR_TYPE_GUID "bc13c2ff-59e6-4262-a352-b275fd6f7172"
+
+struct bls_source {
+    struct volume *vol;
+    char prefix[BLS_MAX_PREFIX];
+};
 
 struct bls_snippet {
+    const struct bls_source *source;
     char *id;
     char *title;
     char *version;
@@ -234,7 +247,7 @@ static void bls_parse(struct bls_snippet *snippet, const char *text, size_t size
     }
 }
 
-static char *bls_read_snippet(const char *name, size_t *size_out) {
+static char *bls_read_snippet(struct volume *vol, const char *name, size_t *size_out) {
     char path[MENU_PATH_MAX];
     size_t pos = 0;
 
@@ -251,7 +264,7 @@ static char *bls_read_snippet(const char *name, size_t *size_out) {
         return NULL;
     }
 
-    struct file_handle *f = fopen(boot_volume, path);
+    struct file_handle *f = fopen(vol, path);
     if (f == NULL) {
         return NULL;
     }
@@ -295,8 +308,8 @@ static void bls_body_append(struct bls_body *body, const char *s) {
 
 // A Type #1 path is absolute on the partition holding the entries, which is
 // the one the config was read from.
-static void bls_body_append_path(struct bls_body *body, const char *path) {
-    bls_body_append(body, "boot():");
+static void bls_body_append_path(struct bls_body *body, const char *prefix, const char *path) {
+    bls_body_append(body, prefix);
     if (path[0] != '/') {
         bls_body_append(body, "/");
     }
@@ -304,6 +317,7 @@ static void bls_body_append_path(struct bls_body *body, const char *path) {
 }
 
 static char *bls_build_body(const struct bls_snippet *snippet) {
+    const char *prefix = snippet->source->prefix;
     size_t size = 4096;
     struct bls_body body = { .buf = ext_mem_alloc(size), .size = size, .pos = 0 };
 
@@ -311,22 +325,22 @@ static char *bls_build_body(const struct bls_snippet *snippet) {
 
     if (snippet->efi_path != NULL) {
         bls_body_append(&body, "PROTOCOL: efi\nPATH: ");
-        bls_body_append_path(&body, snippet->efi_path);
+        bls_body_append_path(&body, prefix, snippet->efi_path);
         bls_body_append(&body, "\n");
     } else {
         bls_body_append(&body, "PROTOCOL: linux\nKERNEL_PATH: ");
-        bls_body_append_path(&body, snippet->linux_path);
+        bls_body_append_path(&body, prefix, snippet->linux_path);
         bls_body_append(&body, "\n");
 
         for (size_t i = 0; i < snippet->initrd_count; i++) {
             bls_body_append(&body, "MODULE_PATH: ");
-            bls_body_append_path(&body, snippet->initrd[i]);
+            bls_body_append_path(&body, prefix, snippet->initrd[i]);
             bls_body_append(&body, "\n");
         }
 
         if (snippet->devicetree != NULL) {
             bls_body_append(&body, "DTB_PATH: ");
-            bls_body_append_path(&body, snippet->devicetree);
+            bls_body_append_path(&body, prefix, snippet->devicetree);
             bls_body_append(&body, "\n");
         }
     }
@@ -380,10 +394,15 @@ static const char *bls_bare_path(const char *path) {
     return colon != NULL ? colon + 1 : path;
 }
 
-static bool bls_kernel_already_listed(struct menu_entry *node, const char *path) {
+static bool bls_kernel_already_listed(struct menu_entry *node, const char *prefix,
+                                      const char *path) {
+    // Only a snippet on the volume the config came from may be matched on its
+    // path alone: elsewhere the same path names a different file.
+    bool bare_ok = strcmp(prefix, "boot():") == 0;
+
     for (; node != NULL; node = node->next) {
         if (node->sub != NULL) {
-            if (bls_kernel_already_listed(node->sub, path)) {
+            if (bls_kernel_already_listed(node->sub, prefix, path)) {
                 return true;
             }
             continue;
@@ -401,23 +420,67 @@ static bool bls_kernel_already_listed(struct menu_entry *node, const char *path)
             continue;
         }
 
-        if (strcasecmp(bls_bare_path(existing), bls_bare_path(path)) == 0) {
-            return true;
+        if (bare_ok) {
+            if (strcasecmp(bls_bare_path(existing), bls_bare_path(path)) == 0) {
+                return true;
+            }
+        } else {
+            size_t prefix_len = strlen(prefix);
+            if (strncasecmp(existing, prefix, prefix_len) == 0
+             && strcasecmp(bls_bare_path(existing + prefix_len), bls_bare_path(path)) == 0) {
+                return true;
+            }
         }
     }
 
     return false;
 }
 
-void bls_append_entries(void) {
-    if (boot_volume == NULL || boot_volume->pxe) {
-        return;
+static bool bls_is_xbootldr(struct volume *vol) {
+    struct guid xbootldr;
+
+    if (!vol->part_type_guid_valid) {
+        return false;
     }
 
-    struct bls_names names = {0};
+    if (!string_to_guid_mixed(&xbootldr, XBOOTLDR_TYPE_GUID)) {
+        return false;
+    }
 
-    if (!fs_readdir(boot_volume, BLS_DIR, bls_collect_name, &names)) {
-        return;
+    return memcmp(&vol->part_type_guid, &xbootldr, sizeof(struct guid)) == 0;
+}
+
+// Paths in a snippet are relative to the partition holding it, so a partition
+// other than the one the config came from has to be named outright.
+static bool bls_source_prefix(struct volume *vol, char *prefix) {
+    if (!vol->part_guid_valid) {
+        return false;
+    }
+
+    char guid_str[37];
+    guid_to_string(&vol->part_guid, guid_str);
+
+    size_t pos = 0;
+    for (const char *p = "guid("; *p != '\0'; p++) {
+        prefix[pos++] = *p;
+    }
+    for (size_t i = 0; guid_str[i] != '\0'; i++) {
+        prefix[pos++] = guid_str[i];
+    }
+    prefix[pos++] = ')';
+    prefix[pos++] = ':';
+    prefix[pos] = '\0';
+
+    return true;
+}
+
+static size_t bls_gather(const struct bls_source *source,
+                         struct bls_snippet *snippets, size_t max) {
+    struct bls_names names = {0};
+    size_t count = 0;
+
+    if (!fs_readdir(source->vol, BLS_DIR, bls_collect_name, &names)) {
+        return 0;
     }
 
     if (names.truncated) {
@@ -425,12 +488,9 @@ void bls_append_entries(void) {
                BLS_MAX_ENTRIES, BLS_DIR);
     }
 
-    struct bls_snippet *snippets = ext_mem_alloc(names.count * sizeof(struct bls_snippet));
-    size_t count = 0;
-
-    for (size_t i = 0; i < names.count; i++) {
+    for (size_t i = 0; i < names.count && count < max; i++) {
         size_t size;
-        char *text = bls_read_snippet(names.name[i], &size);
+        char *text = bls_read_snippet(source->vol, names.name[i], &size);
         if (text == NULL) {
             printv("bls: could not read %s\n", names.name[i]);
             continue;
@@ -438,6 +498,7 @@ void bls_append_entries(void) {
 
         struct bls_snippet *snippet = &snippets[count];
         memset(snippet, 0, sizeof(struct bls_snippet));
+        snippet->source = source;
         snippet->id = bls_strdup(names.name[i], strlen(names.name[i]) - 5);
 
         bls_parse(snippet, text, size);
@@ -451,6 +512,43 @@ void bls_append_entries(void) {
         }
 
         count++;
+    }
+
+    return count;
+}
+
+void bls_append_entries(void) {
+    if (boot_volume == NULL || boot_volume->pxe) {
+        return;
+    }
+
+    struct bls_source sources[2];
+    size_t source_count = 1;
+
+    sources[0].vol = boot_volume;
+    strcpy(sources[0].prefix, "boot():");
+
+    volume_iterate_parts(boot_volume,
+        if (_PART == boot_volume || !bls_is_xbootldr(_PART)) {
+            continue;
+        }
+
+        if (!bls_source_prefix(_PART, sources[1].prefix)) {
+            printv("bls: the XBOOTLDR partition has no GUID to address it by\n");
+            break;
+        }
+
+        sources[1].vol = _PART;
+        source_count = 2;
+        break;
+    );
+
+    size_t alloc_size = BLS_MAX_ENTRIES * sizeof(struct bls_snippet);
+    struct bls_snippet *snippets = ext_mem_alloc(alloc_size);
+    size_t count = 0;
+
+    for (size_t i = 0; i < source_count; i++) {
+        count += bls_gather(&sources[i], snippets + count, BLS_MAX_ENTRIES - count);
     }
 
     // Insertion sort: the list is short and this keeps equal entries in the
@@ -474,7 +572,7 @@ void bls_append_entries(void) {
         struct bls_snippet *snippet = &snippets[i];
 
         const char *path = snippet->efi_path != NULL ? snippet->efi_path : snippet->linux_path;
-        if (bls_kernel_already_listed(menu_tree, path)) {
+        if (bls_kernel_already_listed(menu_tree, snippet->source->prefix, path)) {
             printv("bls: %s is already in limine.conf, skipping\n", snippet->id);
             continue;
         }
@@ -494,5 +592,5 @@ void bls_append_entries(void) {
         tail = &entry->next;
     }
 
-    pmm_free(snippets, names.count * sizeof(struct bls_snippet));
+    pmm_free(snippets, alloc_size);
 }

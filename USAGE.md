@@ -29,6 +29,11 @@ Entries written in `limine.conf` take precedence. A snippet naming a kernel
 that a `limine.conf` entry already boots is dropped rather than shown twice,
 and the remaining snippets appear after the hand-written entries.
 
+An Extended Boot Loader (XBOOTLDR) partition on the boot drive is searched as
+well as the boot partition, and its entries are merged into the same ordering.
+Paths in those entries resolve against that partition, so the same path on both
+partitions names two different kernels and both are kept.
+
 `bootctl set-default @saved` is honoured: the entry booted last is recorded in
 `LoaderEntryLastBooted` and selected on the next boot. The variable is written
 only while `@saved` is in effect, and only when the entry differs from the one
