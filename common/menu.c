@@ -1028,7 +1028,13 @@ static bool bli_id_char_ok(char c) {
 static void bli_entry_base_id(struct menu_entry *entry, char *buf) {
     char path[MENU_PATH_MAX];
     size_t pos = 0;
-    get_entry_path(entry, path, sizeof(path), &pos);
+
+    if (entry->bli_id != NULL) {
+        strncpy(path, entry->bli_id, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
+    } else {
+        get_entry_path(entry, path, sizeof(path), &pos);
+    }
 
     const char *p = path;
     if (*p == '/') {

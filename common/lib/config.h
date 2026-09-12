@@ -11,6 +11,9 @@ extern bool bad_config;
 struct menu_entry {
     char *name;
     char *comment;
+    // Set only for entries whose identifier is fixed by something outside the
+    // menu: a Type #1 entry is addressed by its filename, not by its title.
+    char *bli_id;
     struct menu_entry *parent;
     struct menu_entry *sub;
     bool expanded;
