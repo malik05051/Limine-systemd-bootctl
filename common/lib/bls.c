@@ -615,6 +615,8 @@ static void bls_remember_counter(const struct bls_snippet *snippet) {
     counted->tries_done = snippet->tries_done;
 }
 
+#if defined (UEFI)
+
 static size_t bls_append_uint(char *buf, size_t pos, unsigned value) {
     char digits[10];
     size_t ndigits = 0;
@@ -687,7 +689,6 @@ void bls_count_boot(const char *entry_id) {
         }
         new_name[pos] = '\0';
 
-#if defined (UEFI)
         if (fs_rename(counted->vol, old_path, new_name)) {
             counted->tries_left--;
             counted->tries_done++;
@@ -699,9 +700,7 @@ void bls_count_boot(const char *entry_id) {
             } else {
                 counted->tries_left = 0;
             }
-        } else
-#endif
-        {
+        } else {
             // Booting an entry whose count could not be written down is
             // better than not booting, but the attempt is now invisible.
             printv("bls: could not count the boot of %s\n", counted->id);
@@ -710,6 +709,8 @@ void bls_count_boot(const char *entry_id) {
         return;
     }
 }
+
+#endif
 
 void bls_append_entries(void) {
     if (boot_volume == NULL || boot_volume->pxe) {

@@ -7,9 +7,13 @@
 // snippet naming a kernel an existing entry already boots is dropped.
 void bls_append_entries(void);
 
+#if defined (UEFI)
+
 // Record a boot attempt against a Type #1 entry carrying a boot counter,
 // renaming its snippet so the count survives a boot that never completes.
 // Entries without a counter are left alone.
 void bls_count_boot(const char *entry_id);
+
+#endif
 
 #endif
