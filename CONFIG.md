@@ -346,6 +346,18 @@ Editor control options:
   * `resolution` - The resolution to be used. This setting takes the form of
     `<width>x<height>x<bpp>`. If the resolution is not available, Limine will
     pick another one automatically. Omitting `<bpp>` will default to 32.
+  * `uki_profiles` - If set to `yes` and `path` names a multi-profile Unified
+    Kernel Image, each profile after the first gets a menu entry of its own,
+    placed right after this one and titled after the profile's `TITLE=` (or
+    `ID=`). Such an entry passes `@N` ahead of `cmdline`, which selects profile
+    `N`; this entry itself keeps booting profile `@0`. Its Boot Loader Interface
+    identifier is this entry's with `@` and the profile's `ID=` (or `N`)
+    appended. The added entries shift the numbering that an index-valued
+    `default_entry` counts, so prefer a path there. Profiles are not listed when
+    `cmdline` already starts with `@`, or when `path` is not a `boot()`,
+    `guid()`, `uuid()` or `fslabel()` resource. The profile titles are read
+    before the image is verified; verification still happens when an entry is
+    booted.
 
 * EFI Boot Entry protocol:
   * `entry` - The name of the EFI boot entry to reboot into.

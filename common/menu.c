@@ -7,6 +7,7 @@
 #include <lib/bli.h>
 #include <lib/bls.h>
 #include <lib/smbios.h>
+#include <lib/uki.h>
 #include <lib/print.h>
 #include <lib/misc.h>
 #include <lib/libc.h>
@@ -1133,6 +1134,141 @@ static struct menu_entry *bli_id_to_entry(struct menu_entry *node, const char *i
     return NULL;
 }
 
+static char *join_strings(const char *const *parts, size_t count) {
+    size_t len = 0;
+    for (size_t i = 0; i < count; i++) {
+        len += strlen(parts[i]);
+    }
+
+    char *ret = ext_mem_alloc(len + 1);
+    size_t pos = 0;
+    for (size_t i = 0; i < count; i++) {
+        size_t part_len = strlen(parts[i]);
+        memcpy(ret + pos, parts[i], part_len);
+        pos += part_len;
+    }
+    ret[pos] = '\0';
+    return ret;
+}
+
+static void uint_to_string(size_t val, char *buf) {
+    char digits[20];
+    size_t ndigits = 0;
+    do {
+        digits[ndigits++] = '0' + (val % 10);
+        val /= 10;
+    } while (val > 0);
+    for (size_t i = 0; i < ndigits; i++) {
+        buf[i] = digits[ndigits - 1 - i];
+    }
+    buf[ndigits] = '\0';
+}
+
+// Each profile past @0 of a multi-profile UKI whose entry opts in becomes an
+// entry of its own, placed right after that entry, which goes on booting @0.
+static void uki_expand_entries(struct menu_entry *node) {
+    for (; node != NULL; node = node->next) {
+        if (node->sub != NULL) {
+            uki_expand_entries(node->sub);
+            continue;
+        }
+        if (node->body == NULL || should_skip_entry(node)) {
+            continue;
+        }
+
+        char *value = config_get_value(node->body, 0, "UKI_PROFILES");
+        if (value == NULL || strcmp(value, "yes") != 0) {
+            continue;
+        }
+
+        value = config_get_value(node->body, 0, "PROTOCOL");
+        if (value == NULL) {
+            continue;
+        }
+        if (strcmp(value, "efi") != 0 && strcmp(value, "efi_chainload") != 0 && strcmp(value, "uefi") != 0) {
+            continue;
+        }
+
+        value = config_get_value(node->body, 0, "PATH");
+        if (value == NULL) {
+            value = config_get_value(node->body, 0, "IMAGE_PATH");
+        }
+        if (value == NULL) {
+            continue;
+        }
+        char *path = strdup(value);
+
+        value = config_get_value(node->body, 0, "KERNEL_CMDLINE");
+        if (value == NULL) {
+            value = config_get_value(node->body, 0, "CMDLINE");
+        }
+        char *cmdline = strdup(value != NULL ? value : "");
+
+        // The stub takes only the first selector, so the entry's own would
+        // win over any added here.
+        if (cmdline[0] == '@') {
+            printv("uki: `%s` already selects a profile\n", node->name);
+            pmm_free(path, strlen(path) + 1);
+            pmm_free(cmdline, strlen(cmdline) + 1);
+            continue;
+        }
+
+        size_t profiles_size = UKI_PROFILES_MAX * sizeof(struct uki_profile);
+        struct uki_profile *profiles = ext_mem_alloc(profiles_size);
+        size_t count = uki_extra_profiles(path, profiles, UKI_PROFILES_MAX);
+
+        char entry_path[MENU_PATH_MAX];
+        size_t pos = 0;
+        get_entry_path(node, entry_path, sizeof(entry_path), &pos);
+
+        struct menu_entry *last = node;
+        for (size_t i = 0; i < count; i++) {
+            struct uki_profile *profile = &profiles[i];
+
+            char number[21];
+            uint_to_string(i + 1, number);
+
+            // Labelled as systemd-boot labels them, down to numbering an
+            // unnamed profile from 1.
+            char fallback[32] = "Profile #";
+            uint_to_string(i + 2, fallback + strlen(fallback));
+            const char *label = fallback;
+            if (profile->title[0] != '\0') {
+                label = profile->title;
+            } else if (profile->id[0] != '\0') {
+                label = profile->id;
+            }
+
+            struct menu_entry *entry = ext_mem_alloc(sizeof(struct menu_entry));
+
+            const char *name_parts[] = { node->name, " (", label, ")" };
+            entry->name = join_strings(name_parts, 4);
+
+            // First in the body, so it shadows the entry's own command line.
+            const char *body_parts[] = {
+                "kernel_cmdline: @", number, cmdline[0] != '\0' ? " " : "", cmdline, "\n", node->body
+            };
+            entry->body = join_strings(body_parts, 6);
+
+            const char *id_parts[] = {
+                entry_path, "@", profile->id[0] != '\0' ? profile->id : number
+            };
+            entry->bli_id = join_strings(id_parts, 3);
+
+            entry->comment = node->comment;
+            entry->parent = node->parent;
+            entry->next = last->next;
+            last->next = entry;
+            last = entry;
+        }
+
+        pmm_free(profiles, profiles_size);
+        pmm_free(path, strlen(path) + 1);
+        pmm_free(cmdline, strlen(cmdline) + 1);
+        node = last;
+    }
+}
+
 static void bli_publish_entries_walk(struct menu_entry *node) {
     for (; node != NULL; node = node->next) {
         if (should_skip_entry(node)) {
@@ -1868,6 +2004,10 @@ noreturn void _menu(bool first_run) {
     bool default_entry_unresolved = false;
 #if defined (UEFI)
     bool use_saved_entry = false;
+#endif
+
+#if defined (UEFI)
+    uki_expand_entries(menu_tree);
 #endif
 
     bls_append_entries();
