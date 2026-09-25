@@ -604,3 +604,61 @@ again:
 
     return true;
 }
+
+#if defined (UEFI)
+
+size_t pe_file_sections(struct file_handle *fd, struct pe_section **out) {
+    IMAGE_DOS_HEADER dos;
+    if (fd->size < sizeof(dos) || fread(fd, &dos, 0, sizeof(dos)) != sizeof(dos)
+     || dos.e_magic != IMAGE_DOS_SIGNATURE) {
+        return 0;
+    }
+
+    // Only the file header is needed: it gives the optional header's size,
+    // and the section table follows that.
+    uint32_t signature;
+    IMAGE_FILE_HEADER file_hdr;
+    uint64_t nt_offset = dos.e_lfanew;
+    if (nt_offset > fd->size - sizeof(signature) - sizeof(file_hdr)
+     || fread(fd, &signature, nt_offset, sizeof(signature)) != sizeof(signature)
+     || signature != IMAGE_NT_SIGNATURE
+     || fread(fd, &file_hdr, nt_offset + sizeof(signature), sizeof(file_hdr)) != sizeof(file_hdr)) {
+        return 0;
+    }
+
+    size_t count = file_hdr.NumberOfSections;
+    uint64_t table_offset = nt_offset + sizeof(signature) + sizeof(file_hdr) + file_hdr.SizeOfOptionalHeader;
+    uint64_t table_size = (uint64_t)count * sizeof(IMAGE_SECTION_HEADER);
+    if (count == 0 || table_offset > fd->size || table_size > fd->size - table_offset) {
+        return 0;
+    }
+
+    IMAGE_SECTION_HEADER *table = ext_mem_alloc(table_size);
+    if (fread(fd, table, table_offset, table_size) != table_size) {
+        pmm_free(table, table_size);
+        return 0;
+    }
+
+    struct pe_section *sections = ext_mem_alloc(count * sizeof(struct pe_section));
+    for (size_t i = 0; i < count; i++) {
+        memcpy(sections[i].name, table[i].Name, sizeof(table[i].Name));
+
+        // SizeOfRawData is padded to the file alignment; VirtualSize is not,
+        // but is zero in images that leave it unset.
+        uint32_t size = table[i].SizeOfRawData;
+        if (table[i].VirtualSize != 0 && table[i].VirtualSize < size) {
+            size = table[i].VirtualSize;
+        }
+        if (table[i].PointerToRawData > fd->size || size > fd->size - table[i].PointerToRawData) {
+            continue;
+        }
+        sections[i].offset = table[i].PointerToRawData;
+        sections[i].size = size;
+    }
+
+    pmm_free(table, table_size);
+    *out = sections;
+    return count;
+}
+
+#endif
