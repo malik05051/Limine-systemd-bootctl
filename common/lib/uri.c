@@ -651,3 +651,60 @@ grew:;
 
     return out;
 }
+
+#if defined (UEFI)
+
+struct file_handle *uri_peek(char *uri) {
+    // This runs while the menu is being built, where a panic would return
+    // straight into building it again, so anything uri_resolve() or a
+    // dispatcher would panic over is refused here first.
+    size_t len = strlen(uri);
+    if (len >= URI_BUF_SIZE) {
+        return NULL;
+    }
+    char *hash_mark = strrchr(uri, '#');
+    if (hash_mark != NULL) {
+        if (strlen(hash_mark + 1) != 128) {
+            return NULL;
+        }
+        for (const char *p = hash_mark + 1; *p != '\0'; p++) {
+            if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F'))) {
+                return NULL;
+            }
+        }
+    }
+
+    char *resource, *root, *path, *hash;
+    if (!uri_resolve(uri, &resource, &root, &path, &hash)) {
+        return NULL;
+    }
+
+    if (!strcmp(resource, "boot")) {
+        if (boot_volume->pxe) {
+            return NULL;
+        }
+        int partition = boot_volume->partition;
+        if (root[0] != '\0') {
+            uint64_t val = strtoui(root, NULL, 10);
+            if (val > 256) {
+                return NULL;
+            }
+            partition = val;
+        }
+        struct volume *volume = volume_get_by_coord(boot_volume->is_optical,
+                                                    boot_volume->index, partition);
+        if (volume == NULL) {
+            return NULL;
+        }
+        return fopen(volume, path);
+    }
+    if (!strcmp(resource, "guid") || !strcmp(resource, "uuid")) {
+        return uri_guid_dispatch(root, path);
+    }
+    if (!strcmp(resource, "fslabel")) {
+        return uri_fslabel_dispatch(root, path);
+    }
+    return NULL;
+}
+
+#endif

@@ -23,4 +23,14 @@ struct file_handle *uri_open(char *uri, uint32_t type, bool allow_high_mem
 #endif
 );
 
+#if defined (UEFI)
+
+// Opens the file a boot(), guid(), uuid() or fslabel() URI names for partial
+// reads, without reading it in or checking its hash. Only for metadata that
+// decides nothing about what is booted. A URI that uri_open() would panic
+// over yields NULL instead.
+struct file_handle *uri_peek(char *uri);
+
+#endif
+
 #endif
