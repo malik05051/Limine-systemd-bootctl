@@ -716,6 +716,15 @@ void bls_append_entries(void) {
         return;
     }
 
+    // With a config hash enrolled, everything booted has to be named by the
+    // config that hash authenticates, with its own hash beside it. A snippet
+    // is neither, so honouring one would let anything that can write to the
+    // ESP boot what it likes through a signed loader.
+    if (secure_boot_active) {
+        printv("bls: config is enrolled, not reading %s\n", BLS_DIR);
+        return;
+    }
+
     struct bls_source sources[2];
     size_t source_count = 1;
 
