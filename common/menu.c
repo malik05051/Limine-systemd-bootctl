@@ -1873,6 +1873,7 @@ noreturn void _menu(bool first_run) {
     bls_append_entries();
 
 #if defined (UEFI)
+    bli_publish_features();
     bli_entries_reset();
     bli_publish_entries_walk(menu_tree);
     bli_entries_publish();
