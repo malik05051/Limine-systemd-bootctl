@@ -235,6 +235,7 @@ void bli_publish_features(void) {
                         (1 << 7) | // Drop-in driver loading
                         (1 << 9) | // @saved pseudo-entry
                         (1 << 13) | // menu-disabled support
+                        (1 << 14) | // Multi-profile UKIs
                         (1 << 18) | // Active TPM2 PCR bank reporting
                         (1 << 19) | // Preferred entry control
                         (1 << 20); // Keyboard layout reporting
