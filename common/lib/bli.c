@@ -227,6 +227,38 @@ static void bli_set_keyboard_layout(void) {
     bli_set_string(L"LoaderKeyboardLayout", layout, len);
 }
 
+void bli_publish_features(void) {
+    uint64_t features = (1 << 0) | // Timeout control
+                        (1 << 1) | // Oneshot timeout control
+                        (1 << 2) | // Default entry control
+                        (1 << 3) | // Oneshot entry control
+                        (1 << 7) | // Drop-in driver loading
+                        (1 << 9) | // @saved pseudo-entry
+                        (1 << 13) | // menu-disabled support
+                        (1 << 14) | // Multi-profile UKIs
+                        (1 << 18) | // Active TPM2 PCR bank reporting
+                        (1 << 19) | // Preferred entry control
+                        (1 << 20); // Keyboard layout reporting
+
+    // Type #1 entries are not read at all with a config hash enrolled.
+    if (!secure_boot_active) {
+        features |= (1 << 4) | // Boot counting
+                    (1 << 5) | // XBOOTLDR partition
+                    (1 << 8) | // Type #1 sort-key field
+                    (1 << 10); // Type #1 devicetree field
+    }
+
+    if (measured_boot) {
+        features |= (1 << 21); // SMBIOS measurement
+    }
+
+    gRT->SetVariable(L"LoaderFeatures",
+            &bli_vendor_guid,
+            EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
+            sizeof(features),
+            &features);
+}
+
 void init_bli(void) {
     bli_set_loader_time(L"LoaderTimeInitUSec", usec_at_bootloader_entry);
 
@@ -235,27 +267,6 @@ void init_bli(void) {
             EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
             sizeof(LIMINE_BRAND),
             LIMINE_BRAND);
-
-    uint64_t features = (1 << 0) | // Timeout control
-                        (1 << 1) | // Oneshot timeout control
-                        (1 << 2) | // Default entry control
-                        (1 << 3) | // Oneshot entry control
-                        (1 << 4) | // Boot counting
-                        (1 << 5) | // XBOOTLDR partition
-                        (1 << 7) | // Drop-in driver loading
-                        (1 << 8) | // Type #1 sort-key field
-                        (1 << 9) | // @saved pseudo-entry
-                        (1 << 10) | // Type #1 devicetree field
-                        (1 << 13) | // menu-disabled support
-                        (1 << 18) | // Active TPM2 PCR bank reporting
-                        (1 << 19) | // Preferred entry control
-                        (1 << 20) | // Keyboard layout reporting
-                        (1 << 21); // SMBIOS measurement
-    gRT->SetVariable(L"LoaderFeatures",
-            &bli_vendor_guid,
-            EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS,
-            sizeof(features),
-            &features);
 
     bli_set_firmware_info();
     bli_set_image_identifier();

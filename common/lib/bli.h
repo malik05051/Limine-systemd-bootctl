@@ -4,6 +4,9 @@
 #if defined (UEFI)
 
 void init_bli(void);
+
+// Which features are on depends on the config, so this waits until it is read.
+void bli_publish_features(void);
 void bli_on_boot(void);
 bool bli_update_oneshot_timeout(uint64_t *timeout_ms, bool *skip_timeout);
 bool bli_update_timeout(uint64_t *timeout_ms, bool *skip_timeout);
