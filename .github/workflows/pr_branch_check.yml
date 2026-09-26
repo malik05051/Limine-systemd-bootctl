@@ -1,15 +1,15 @@
-name: Check that the PR is targetting trunk
+name: Check that the PR is targetting the default branch
 
 on: [ pull_request ]
 
 jobs:
   pr_branch_check:
-    name: Check that the PR is targetting trunk
+    name: Check that the PR is targetting the default branch
     runs-on: ubuntu-latest
     steps:
-      - name: Check that the PR is targetting trunk
-        if: ${{ github.base_ref != 'trunk' }}
+      - name: Check that the PR is targetting the default branch
+        if: ${{ github.base_ref != github.event.repository.default_branch }}
         run: |
           set -e
-          echo "The PR is not targetting the trunk branch, please fix that."
+          echo "The PR is not targetting the ${{ github.event.repository.default_branch }} branch, please fix that."
           false
